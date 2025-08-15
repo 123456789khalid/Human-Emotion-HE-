@@ -1,0 +1,96 @@
+jafee original
+Average_accuracy =
+   88.8243
+Average_Precision =
+   86.9048
+Average_Recall =
+   74.6639
+Average_F_measure =
+   77.2370
+jaffe augmented
+Average_accuracy =
+   98.4882
+Average_Precision =
+   96.9578
+Average_Recall =
+   94.9541
+Average_F_measure =
+   95.9225
+%%%%%%%%%%%%%%%%%%%%%%%
+CK+
+Average_accuracy =
+   96.3002
+Average_Precision =
+   87.8137
+Average_Recall =
+   82.6859
+Average_F_measure =
+   84.4385
+CK+ augmented
+Average_accuracy =
+   99.7324
+Average_Precision =
+   98.9786
+Average_Recall =
+   98.4463
+Average_F_measure =
+   98.7100
+%%%%%%%%%%%%%%%%%%%%%%%%%%
+FER-2013
+Average_accuracy =
+   98.3361
+Average_Precision =
+   92.1820
+Average_Recall =
+   92.1132
+Average_F_measure =
+   92.1459
+FER-2013 augmented
+Average_accuracy =
+   99.9555
+Average_Precision =
+   99.7152
+Average_Recall =
+   99.8248
+Average_F_measure =
+   99.7696
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+Affacetnet (>91%&<94%)
+Average_accuracy =
+   96.9503
+Average_Precision =
+   92.3691
+Average_Recall =
+   80.3933
+Average_F_measure =
+   84.9347
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+(>95%&<99%)
+Average_accuracy =
+   95.0013
+Average_Precision =
+   85.6570
+Average_Recall =
+   69.0001
+Average_F_measure =
+   74.1871
+%%%%%%%%%%%%%%%%%%%%%%%%%%%
+CUSTOM            (>91%&<94%)
+Average_accuracy =
+   97.6228
+Average_Precision =
+   93.9940
+Average_Recall =
+   94.5383
+Average_F_measure =
+   94.2312
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+(>95%&<99%)
+Average_accuracy =
+   99.1767
+Average_Precision =
+   97.9206
+Average_Recall =
+   98.0332
+Average_F_measure =
+   97.9724
