@@ -1,27 +1,24 @@
 imds = imageDatastore('C:\Users\Muhammad Shoaib\Desktop\khalid DataSet\affactnet results\train_classification','IncludeSubfolders',true,'LabelSource','foldernames');
 [imdsTrain,imdsValidation] = splitEachLabel(imds,0.7,'randomized');
 %%
-net =  inceptionresnetv2;
-
-%%
+net =  inceptionv3;
 layer = 'predictions';
 %%
 k=1;
-for i= 1: 1
+for i= 43720:100000
      a= [imdsTrain.Files(i)];
-     tic
    a = imresize(imread(char(a)),[299 299]);
-featuresTrain(k,:) = activations(net,a,layer,'OutputAs','rows');
-time = toc
+featuresTrain1(k,:) = activations(net,a,layer,'OutputAs','rows');
 k=k+1;
 i
 end
 %%
-for i=1:numel(imdsValidation.Files)
+k=1;
+for i= 54074:86295
      a=[imdsValidation.Files(i)];
-      a = imresize(imread(char(a)),[331 331]);
-featuresTest(i,:) = activations(net,a,layer,'OutputAs','rows');
-
+      a = imresize(imread(char(a)),[299 299]);
+featuresTest(k,:) = activations(net,a,layer,'OutputAs','rows');
+k=k+1;
 i
 end
 %%
