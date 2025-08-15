@@ -1,0 +1,1044 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+
+__all__ = ['MobileNetV3', 'mobilenetv3']
+
+
+def conv_bn(inp, oup, stride, conv_layer=nn.Conv2d, norm_layer=nn.BatchNorm2d, nlin_layer=nn.ReLU):
+    return nn.Sequential(
+        conv_layer(inp, oup, 3, stride, 1, bias=False),
+        norm_layer(oup),
+        nlin_layer(inplace=True)
+    )
+
+
+def conv_1x1_bn(inp, oup, conv_layer=nn.Conv2d, norm_layer=nn.BatchNorm2d, nlin_layer=nn.ReLU):
+    return nn.Sequential(
+        conv_layer(inp, oup, 1, 1, 0, bias=False),
+        norm_layer(oup),
+        nlin_layer(inplace=True)
+    )
+
+
+class Hswish(nn.Module):
+    def __init__(self, inplace=True):
+        super(Hswish, self).__init__()
+        self.inplace = inplace
+
+    def forward(self, x):
+        return x * F.relu6(x + 3., inplace=self.inplace) / 6.
+
+
+class Hsigmoid(nn.Module):
+    def __init__(self, inplace=True):
+        super(Hsigmoid, self).__init__()
+        self.inplace = inplace
+
+    def forward(self, x):
+        return F.relu6(x + 3., inplace=self.inplace) / 6.
+
+
+class SEModule(nn.Module):
+    def __init__(self, channel, reduction=4):
+        super(SEModule, self).__init__()
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.fc = nn.Sequential(
+            nn.Linear(channel, channel // reduction, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Linear(channel // reduction, channel, bias=False),
+            Hsigmoid()
+            # nn.Sigmoid()
+        )
+
+    def forward(self, x):
+        b, c, _, _ = x.size()
+        y = self.avg_pool(x).view(b, c)
+        y = self.fc(y).view(b, c, 1, 1)
+        return x * y.expand_as(x)
+
+
+class Identity(nn.Module):
+    def __init__(self, channel):
+        super(Identity, self).__init__()
+
+    def forward(self, x):
+        return x
+
+
+def make_divisible(x, divisible_by=8):
+    import numpy as np
+    return int(np.ceil(x * 1. / divisible_by) * divisible_by)
+
+
+class MobileBottleneck(nn.Module):
+    def __init__(self, inp, oup, kernel, stride, exp, se=False, nl='RE'):
+        super(MobileBottleneck, self).__init__()
+        assert stride in [1, 2]
+        assert kernel in [3, 5]
+        padding = (kernel - 1) // 2
+        self.use_res_connect = stride == 1 and inp == oup
+
+        conv_layer = nn.Conv2d
+        norm_layer = nn.BatchNorm2d
+        if nl == 'RE':
+            nlin_layer = nn.ReLU # or ReLU6
+        elif nl == 'HS':
+            nlin_layer = Hswish
+        else:
+            raise NotImplementedError
+        if se:
+            SELayer = SEModule
+        else:
+            SELayer = Identity
+
+        self.conv = nn.Sequential(
+            # pw
+            conv_layer(inp, exp, 1, 1, 0, bias=False),
+            norm_layer(exp),
+            nlin_layer(inplace=True),
+            # dw
+            conv_layer(exp, exp, kernel, stride, padding, groups=exp, bias=False),
+            norm_layer(exp),
+            SELayer(exp),
+            nlin_layer(inplace=True),
+            # pw-linear
+            conv_layer(exp, oup, 1, 1, 0, bias=False),
+            norm_layer(oup),
+        )
+
+    def forward(self, x):
+        if self.use_res_connect:
+            return x + self.conv(x)
+        else:
+            return self.conv(x)
+
+
+class MobileNetV3(nn.Module):
+    def __init__(self, n_class=1000, input_size=224, dropout=0.8, mode='small', width_mult=1.0):
+        super(MobileNetV3, self).__init__()
+        input_channel = 16
+        last_channel = 1280
+        if mode == 'large':
+            # refer to Table 1 in paper
+            mobile_setting = [
+                # k, exp, c,  se,     nl,  s,
+                [3, 16,  16,  False, 'RE', 1],
+                [3, 64,  24,  False, 'RE', 2],
+                [3, 72,  24,  False, 'RE', 1],
+                [5, 72,  40,  True,  'RE', 2],
+                [5, 120, 40,  True,  'RE', 1],
+                [5, 120, 40,  True,  'RE', 1],
+                [3, 240, 80,  False, 'HS', 2],
+                [3, 200, 80,  False, 'HS', 1],
+                [3, 184, 80,  False, 'HS', 1],
+                [3, 184, 80,  False, 'HS', 1],
+                [3, 480, 112, True,  'HS', 1],
+                [3, 672, 112, True,  'HS', 1],
+                [5, 672, 160, True,  'HS', 2],
+                [5, 960, 160, True,  'HS', 1],
+                [5, 960, 160, True,  'HS', 1],
+            ]
+        elif mode == 'small':
+            # refer to Table 2 in paper
+            mobile_setting = [
+                # k, exp, c,  se,     nl,  s,
+                [3, 16,  16,  True,  'RE', 2],
+                [3, 72,  24,  False, 'RE', 2],
+                [3, 88,  24,  False, 'RE', 1],
+                [5, 96,  40,  True,  'HS', 2],
+                [5, 240, 40,  True,  'HS', 1],
+                [5, 240, 40,  True,  'HS', 1],
+                [5, 120, 48,  True,  'HS', 1],
+                [5, 144, 48,  True,  'HS', 1],
+                [5, 288, 96,  True,  'HS', 2],
+                [5, 576, 96,  True,  'HS', 1],
+                [5, 576, 96,  True,  'HS', 1],
+            ]
+        else:
+            raise NotImplementedError
+
+        # building first layer
+        assert input_size % 32 == 0
+        last_channel = make_divisible(last_channel * width_mult) if width_mult > 1.0 else last_channel
+        self.features = [conv_bn(3, input_channel, 2, nlin_layer=Hswish)]
+        self.classifier = []
+
+        # building mobile blocks
+        for k, exp, c, se, nl, s in mobile_setting:
+            output_channel = make_divisible(c * width_mult)
+            exp_channel = make_divisible(exp * width_mult)
+            self.features.append(MobileBottleneck(input_channel, output_channel, k, s, exp_channel, se, nl))
+            input_channel = output_channel
+
+        # building last several layers
+        if mode == 'large':
+            last_conv = make_divisible(960 * width_mult)
+            self.features.append(conv_1x1_bn(input_channel, last_conv, nlin_layer=Hswish))
+            self.features.append(nn.AdaptiveAvgPool2d(1))
+            self.features.append(nn.Conv2d(last_conv, last_channel, 1, 1, 0))
+            self.features.append(Hswish(inplace=True))
+        elif mode == 'small':
+            last_conv = make_divisible(576 * width_mult)
+            self.features.append(conv_1x1_bn(input_channel, last_conv, nlin_layer=Hswish))
+            # self.features.append(SEModule(last_conv))  # refer to paper Table2, but I think this is a mistake
+            self.features.append(nn.AdaptiveAvgPool2d(1))
+            self.features.append(nn.Conv2d(last_conv, last_channel, 1, 1, 0))
+            self.features.append(Hswish(inplace=True))
+        else:
+            raise NotImplementedError
+
+        # make it nn.Sequential
+        self.features = nn.Sequential(*self.features)
+
+        # building classifier
+        self.classifier = nn.Sequential(
+            nn.Dropout(p=dropout),    # refer to paper section 6
+            nn.Linear(last_channel, n_class),
+        )
+
+        self._initialize_weights()
+
+    def forward(self, x):
+        x = self.features(x)
+        x = x.mean(3).mean(2)
+        x = self.classifier(x)
+        return x
+
+    def _initialize_weights(self):
+        # weight initialization
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out')
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.ones_(m.weight)
+                nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.Linear):
+                nn.init.normal_(m.weight, 0, 0.01)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+
+
+def mobilenetv3(pretrained=False, **kwargs):
+    model = MobileNetV3(**kwargs)
+    if pretrained:
+        state_dict = torch.load('mobilenetv3_small_67.4.pth.tar')
+        model.load_state_dict(state_dict, strict=True)
+        # raise NotImplementedError
+    return model
+
+
+if __name__ == '__main__':
+    net = mobilenetv3()
+    print('mobilenetv3:\n', net)
+    print('Total params: %.2fM' % (sum(p.numel() for p in net.parameters())/1000000.0))
+    input_size=(1, 3, 224, 224)
+    # pip install --upgrade git+https://github.com/kuan-wang/pytorch-OpCounter.git
+    from thop import profile
+    flops, params = profile(net, input_size=input_size)
+    # print(flops)
+    # print(params)
+    print('Total params: %.2fM' % (params/1000000.0))
+    print('Total flops: %.2fM' % (flops/1000000.0))
+    x = torch.randn(input_size)
+    out = net(x)
+
+
+from sacred import Experiment
+
+ex = Experiment("ViLT")
+
+
+def _loss_names(d):
+    ret = {
+        "itm": 0,
+        "mlm": 0,
+        "mpp": 0,
+        "vqa": 0,
+        "nlvr2": 0,
+        "irtr": 0,
+    }
+    ret.update(d)
+    return ret
+
+
+@ex.config
+def config():
+    exp_name = "vilt"
+    seed = 0
+    datasets = ["coco", "vg", "sbu", "gcc"]
+    loss_names = _loss_names({"itm": 1, "mlm": 1})
+    batch_size = 4096  # this is a desired batch size; pl trainer will accumulate gradients when per step batch is smaller.
+
+    # Image setting
+    train_transform_keys = ["pixelbert"]
+    val_transform_keys = ["pixelbert"]
+    image_size = 384
+    max_image_len = -1
+    patch_size = 32
+    draw_false_image = 1
+    image_only = False
+
+    # Text Setting
+    vqav2_label_size = 3129
+    max_text_len = 40
+    tokenizer = "bert-base-uncased"
+    vocab_size = 30522
+    whole_word_masking = False
+    mlm_prob = 0.15
+    draw_false_text = 0
+
+    # Transformer Setting
+    vit = "vit_base_patch32_384"
+    hidden_size = 768
+    num_heads = 12
+    num_layers = 12
+    mlp_ratio = 4
+    drop_rate = 0.1
+
+    # Optimizer Setting
+    optim_type = "adamw"
+    learning_rate = 1e-4
+    weight_decay = 0.01
+    decay_power = 1
+    max_epoch = 100
+    max_steps = 25000
+    warmup_steps = 2500
+    end_lr = 0
+    lr_mult = 1  # multiply lr for downstream heads
+
+    # Downstream Setting
+    get_recall_metric = False
+
+    # PL Trainer Setting
+    resume_from = None
+    fast_dev_run = False
+    val_check_interval = 1.0
+    test_only = False
+
+    # below params varies with the environment
+    data_root = ""
+    log_dir = "result"
+    per_gpu_batchsize = 0  # you should define this manually with per_gpu_batch_size=#
+    num_gpus = 1
+    num_nodes = 1
+    load_path = ""
+    num_workers = 8
+    precision = 16
+
+
+# Named configs for "environment" which define gpus and nodes, and paths
+@ex.named_config
+def env_dandelin():
+    data_root = "/data2/dsets/dataset"
+    log_dir = "/data2/vilt/result"
+    num_gpus = 8
+    num_nodes = 1
+
+
+# Named configs for "task" which define datasets, loss_names and desired batch_size, warmup_steps, epochs, and exp_name
+@ex.named_config
+def task_mlm_itm():
+    exp_name = "mlm_itm"
+    datasets = ["coco", "vg", "sbu", "gcc"]
+    loss_names = _loss_names({"itm": 1, "mlm": 1})
+    batch_size = 4096
+    max_epoch = 10
+    max_image_len = 200
+
+
+@ex.named_config
+def task_mlm_itm_randaug():
+    exp_name = "mlm_itm_randaug"
+    datasets = ["coco", "vg", "sbu", "gcc"]
+    train_transform_keys = ["pixelbert_randaug"]
+    loss_names = _loss_names({"itm": 1, "mlm": 1})
+    batch_size = 4096
+    max_epoch = 10
+    max_image_len = 200
+
+
+@ex.named_config
+def task_mlm_itm_mpp():
+    exp_name = "mlm_itm_mpp"
+    datasets = ["coco", "vg", "sbu", "gcc"]
+    loss_names = _loss_names({"itm": 1, "mlm": 1, "mpp": 1})
+    batch_size = 4096
+    max_epoch = 10
+    max_image_len = 200
+
+
+@ex.named_config
+def task_finetune_nlvr2():
+    exp_name = "finetune_nlvr2"
+    datasets = ["nlvr2"]
+    loss_names = _loss_names({"nlvr2": 1})
+    batch_size = 128
+    max_epoch = 10
+    max_steps = None
+    warmup_steps = 0.1
+    draw_false_image = 0
+    learning_rate = 1e-4
+
+
+@ex.named_config
+def task_finetune_nlvr2_randaug():
+    exp_name = "finetune_nlvr2_randaug"
+    datasets = ["nlvr2"]
+    train_transform_keys = ["pixelbert_randaug"]
+    loss_names = _loss_names({"nlvr2": 1})
+    batch_size = 128
+    max_epoch = 10
+    max_steps = None
+    warmup_steps = 0.1
+    draw_false_image = 0
+    learning_rate = 1e-4
+
+
+@ex.named_config
+def task_finetune_vqa():
+    exp_name = "finetune_vqa"
+    datasets = ["vqa"]
+    loss_names = _loss_names({"vqa": 1})
+    batch_size = 256
+    max_epoch = 10
+    max_steps = None
+    warmup_steps = 0.1
+    draw_false_image = 0
+    learning_rate = 1e-4
+    val_check_interval = 0.1
+    lr_mult = 10
+
+
+@ex.named_config
+def task_finetune_vqa_randaug():
+    exp_name = "finetune_vqa_randaug"
+    datasets = ["vqa"]
+    train_transform_keys = ["pixelbert_randaug"]
+    loss_names = _loss_names({"vqa": 1})
+    batch_size = 256
+    max_epoch = 10
+    max_steps = None
+    warmup_steps = 0.1
+    draw_false_image = 0
+    learning_rate = 1e-4
+    val_check_interval = 0.1
+    lr_mult = 10
+
+
+@ex.named_config
+def task_finetune_irtr_coco():
+    exp_name = "finetune_irtr_coco"
+    datasets = ["coco"]
+    loss_names = _loss_names({"itm": 0.5, "irtr": 1})
+    batch_size = 256
+    max_epoch = 10
+    max_steps = None
+    warmup_steps = 0.1
+    get_recall_metric = True
+    draw_false_text = 15
+    learning_rate = 1e-4
+
+
+@ex.named_config
+def task_finetune_irtr_coco_randaug():
+    exp_name = "finetune_irtr_coco_randaug"
+    datasets = ["coco"]
+    train_transform_keys = ["pixelbert_randaug"]
+    loss_names = _loss_names({"itm": 0.5, "irtr": 1})
+    batch_size = 256
+    max_epoch = 10
+    max_steps = None
+    warmup_steps = 0.1
+    get_recall_metric = True
+    draw_false_text = 15
+    learning_rate = 1e-4
+
+
+@ex.named_config
+def task_finetune_irtr_f30k():
+    exp_name = "finetune_irtr_f30k"
+    datasets = ["f30k"]
+    loss_names = _loss_names({"itm": 0.5, "irtr": 1})
+    batch_size = 256
+    max_epoch = 10
+    max_steps = None
+    warmup_steps = 0.1
+    get_recall_metric = True
+    draw_false_text = 15
+    learning_rate = 1e-4
+
+
+@ex.named_config
+def task_finetune_irtr_f30k_randaug():
+    exp_name = "finetune_irtr_f30k_randaug"
+    datasets = ["f30k"]
+    train_transform_keys = ["pixelbert_randaug"]
+    loss_names = _loss_names({"itm": 0.5, "irtr": 1})
+    batch_size = 256
+    max_epoch = 10
+    max_steps = None
+    warmup_steps = 0.1
+    get_recall_metric = True
+    draw_false_text = 15
+    learning_rate = 1e-4
+
+
+# Named configs for "etc" which are orthogonal to "env" and "task", need to be added at the end
+
+
+@ex.named_config
+def step25k():
+    max_epoch = 100
+    max_steps = 25000
+
+
+@ex.named_config
+def step50k():
+    max_epoch = 100
+    max_steps = 50000
+
+
+@ex.named_config
+def step100k():
+    max_epoch = 100
+    max_steps = 100000
+
+
+@ex.named_config
+def step200k():
+    max_epoch = 200
+    max_steps = 200000
+
+
+@ex.named_config
+def vit32_base():
+    vit = "vit_base_patch32_384"
+    patch_size = 32
+    hidden_size = 768
+    num_heads = 12
+    num_layers = 12
+
+import torch
+import torch.nn as nn
+
+
+__all__ = ['regnetx_002', 'regnetx_004', 'regnetx_006', 'regnetx_008', 'regnetx_016', 'regnetx_032',
+           'regnetx_040', 'regnetx_064', 'regnetx_080', 'regnetx_120', 'regnetx_160', 'regnetx_320']
+
+
+def conv3x3(in_planes, out_planes, stride=1, groups=1, dilation=1):
+    """3x3 convolution with padding"""
+    return nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=stride,
+                     padding=dilation, groups=groups, bias=False, dilation=dilation)
+
+
+def conv1x1(in_planes, out_planes, stride=1):
+    """1x1 convolution"""
+    return nn.Conv2d(in_planes, out_planes, kernel_size=1, stride=stride, bias=False)
+
+
+class Bottleneck(nn.Module):
+    expansion = 1
+    __constants__ = ['downsample']
+
+    def __init__(self, inplanes, planes, stride=1, downsample=None, group_width=1,
+                 dilation=1, norm_layer=None):
+        super(Bottleneck, self).__init__()
+        if norm_layer is None:
+            norm_layer = nn.BatchNorm2d
+        width = planes * self.expansion
+        # Both self.conv2 and self.downsample layers downsample the input when stride != 1
+        self.conv1 = conv1x1(inplanes, width)
+        self.bn1 = norm_layer(width)
+        self.conv2 = conv3x3(width, width, stride, width // min(width, group_width), dilation)
+        self.bn2 = norm_layer(width)
+        self.conv3 = conv1x1(width, planes)
+        self.bn3 = norm_layer(planes)
+        self.relu = nn.ReLU(inplace=True)
+        self.downsample = downsample
+        self.stride = stride
+
+    def forward(self, x):
+        identity = x
+
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu(out)
+
+        out = self.conv2(out)
+        out = self.bn2(out)
+        out = self.relu(out)
+
+        out = self.conv3(out)
+        out = self.bn3(out)
+
+        if self.downsample is not None:
+            identity = self.downsample(x)
+
+        out += identity
+        out = self.relu(out)
+
+        return out
+
+
+class RegNet(nn.Module):
+
+    def __init__(self, block, layers, widths, num_classes=1000, zero_init_residual=True,
+                 group_width=1, replace_stride_with_dilation=None,
+                 norm_layer=None):
+        super(RegNet, self).__init__()
+        if norm_layer is None:
+            norm_layer = nn.BatchNorm2d
+        self._norm_layer = norm_layer
+
+        self.inplanes = 32
+        self.dilation = 1
+        if replace_stride_with_dilation is None:
+            # each element in the tuple indicates if we should replace
+            # the 2x2 stride with a dilated convolution instead
+            replace_stride_with_dilation = [False, False, False, False]
+        if len(replace_stride_with_dilation) != 4:
+            raise ValueError("replace_stride_with_dilation should be None "
+                             "or a 4-element tuple, got {}".format(replace_stride_with_dilation))
+        self.group_width = group_width
+        self.conv1 = nn.Conv2d(3, self.inplanes, kernel_size=3, stride=2, padding=1,
+                               bias=False)
+        self.bn1 = norm_layer(self.inplanes)
+        self.relu = nn.ReLU(inplace=True)
+        self.layer1 = self._make_layer(block, widths[0], layers[0], stride=2,
+                                       dilate=replace_stride_with_dilation[0])
+        self.layer2 = self._make_layer(block, widths[1], layers[1], stride=2,
+                                       dilate=replace_stride_with_dilation[1])
+        self.layer3 = self._make_layer(block, widths[2], layers[2], stride=2,
+                                       dilate=replace_stride_with_dilation[2])
+        self.layer4 = self._make_layer(block, widths[3], layers[3], stride=2,
+                                       dilate=replace_stride_with_dilation[3])
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+        self.fc = nn.Linear(widths[-1] * block.expansion, num_classes)
+
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+            elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+
+        # Zero-initialize the last BN in each residual branch,
+        # so that the residual branch starts with zeros, and each residual block behaves like an identity.
+        # This improves the model by 0.2~0.3% according to https://arxiv.org/abs/1706.02677
+        if zero_init_residual:
+            for m in self.modules():
+                if isinstance(m, Bottleneck):
+                    nn.init.constant_(m.bn3.weight, 0)
+
+    def _make_layer(self, block, planes, blocks, stride=1, dilate=False):
+        norm_layer = self._norm_layer
+        downsample = None
+        previous_dilation = self.dilation
+        if dilate:
+            self.dilation *= stride
+            stride = 1
+        if stride != 1 or self.inplanes != planes:
+            downsample = nn.Sequential(
+                conv1x1(self.inplanes, planes, stride),
+                norm_layer(planes),
+            )
+
+        layers = []
+        layers.append(block(self.inplanes, planes, stride, downsample, self.group_width,
+                            previous_dilation, norm_layer))
+        self.inplanes = planes
+        for _ in range(1, blocks):
+            layers.append(block(self.inplanes, planes, group_width=self.group_width,
+                                dilation=self.dilation,
+                                norm_layer=norm_layer))
+
+        return nn.Sequential(*layers)
+
+    def _forward_impl(self, x):
+        # See note [TorchScript super()]
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = self.relu(x)
+
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        x = self.layer4(x)
+
+        x = self.avgpool(x)
+        x = torch.flatten(x, 1)
+        x = self.fc(x)
+
+        return x
+
+    def forward(self, x):
+        return self._forward_impl(x)
+
+
+def regnetx_002(**kwargs):
+    return RegNet(Bottleneck, [1, 1, 4, 7], [24, 56, 152, 368], group_width=8, **kwargs)
+
+
+def regnetx_004(**kwargs):
+    return RegNet(Bottleneck, [1, 2, 7, 12], [32, 64, 160, 384], group_width=16, **kwargs)
+
+
+def regnetx_006(**kwargs):
+    return RegNet(Bottleneck, [1, 3, 5, 7], [48, 96, 240, 528], group_width=24, **kwargs)
+
+
+def regnetx_008(**kwargs):
+    return RegNet(Bottleneck, [1, 3, 7, 5], [64, 128, 288, 672], group_width=16, **kwargs)
+
+
+def regnetx_016(**kwargs):
+    return RegNet(Bottleneck, [2, 4, 10, 2], [72, 168, 408, 912], group_width=24, **kwargs)
+
+
+def regnetx_032(**kwargs):
+    return RegNet(Bottleneck, [2, 6, 15, 2], [96, 192, 432, 1008], group_width=48, **kwargs)
+
+
+def regnetx_040(**kwargs):
+    return RegNet(Bottleneck, [2, 5, 14, 2], [80, 240, 560, 1360], group_width=40, **kwargs)
+
+
+def regnetx_064(**kwargs):
+    return RegNet(Bottleneck, [2, 4, 10, 1], [168, 392, 784, 1624], group_width=56, **kwargs)
+
+
+def regnetx_080(**kwargs):
+    return RegNet(Bottleneck, [2, 5, 15, 1], [80, 240, 720, 1920], group_width=120, **kwargs)
+
+
+def regnetx_120(**kwargs):
+    return RegNet(Bottleneck, [2, 5, 11, 1], [224, 448, 896, 2240], group_width=112, **kwargs)
+
+
+def regnetx_160(**kwargs):
+    return RegNet(Bottleneck, [2, 6, 13, 1], [256, 512, 896, 2048], group_width=128, **kwargs)
+
+
+def regnetx_320(**kwargs):
+    return RegNet(Bottleneck, [2, 7, 13, 1], [336, 672, 1344, 2520], group_width=168, **kwargs)
+
+
+# encoding:utf-8
+# Modify from torchvision
+# ResNeXt: Copy from https://github.com/last-one/tools/blob/master/pytorch/SE-ResNeXt/SeResNeXt.py
+import torch.nn as nn
+import math
+
+
+class Bottleneck(nn.Module):
+    expansion = 4
+
+    def __init__(self, inplanes, planes, stride=1, downsample=None):
+        super(Bottleneck, self).__init__()
+        self.conv1 = nn.Conv2d(inplanes, planes, kernel_size=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(planes)
+        self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=stride,
+                               padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(planes)
+        self.conv3 = nn.Conv2d(planes, planes * 4, kernel_size=1, bias=False)
+        self.bn3 = nn.BatchNorm2d(planes * 4)
+        self.relu = nn.ReLU(inplace=True)
+        # SE
+        self.global_pool = nn.AdaptiveAvgPool2d(1)
+        self.conv_down = nn.Conv2d(
+            planes * 4, planes // 4, kernel_size=1, bias=False)
+        self.conv_up = nn.Conv2d(
+            planes // 4, planes * 4, kernel_size=1, bias=False)
+        self.sig = nn.Sigmoid()
+        # Downsample
+        self.downsample = downsample
+        self.stride = stride
+
+    def forward(self, x):
+        residual = x
+
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu(out)
+
+        out = self.conv2(out)
+        out = self.bn2(out)
+        out = self.relu(out)
+
+        out = self.conv3(out)
+        out = self.bn3(out)
+
+        out1 = self.global_pool(out)
+        out1 = self.conv_down(out1)
+        out1 = self.relu(out1)
+        out1 = self.conv_up(out1)
+        out1 = self.sig(out1)
+
+        if self.downsample is not None:
+            residual = self.downsample(x)
+
+        res = out1 * out + residual
+        res = self.relu(res)
+
+        return res
+
+
+class SEResNet(nn.Module):
+
+    def __init__(self, block, layers, num_classes=1000):
+        self.inplanes = 64
+        super(SEResNet, self).__init__()
+        self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3,
+                               bias=False)
+        self.bn1 = nn.BatchNorm2d(64)
+        self.relu = nn.ReLU(inplace=True)
+        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+        self.layer1 = self._make_layer(block, 64, layers[0])
+        self.layer2 = self._make_layer(block, 128, layers[1], stride=2)
+        self.layer3 = self._make_layer(block, 256, layers[2], stride=2)
+        self.layer4 = self._make_layer(block, 512, layers[3], stride=2)
+        self.avgpool = nn.AvgPool2d(7)
+        self.fc = nn.Linear(512 * block.expansion, num_classes)
+
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
+                m.weight.data.normal_(0, math.sqrt(2. / n))
+            elif isinstance(m, nn.BatchNorm2d):
+                m.weight.data.fill_(1)
+                m.bias.data.zero_()
+
+    def _make_layer(self, block, planes, blocks, stride=1):
+        downsample = None
+        if stride != 1 or self.inplanes != planes * block.expansion:
+            downsample = nn.Sequential(
+                nn.Conv2d(self.inplanes, planes * block.expansion,
+                          kernel_size=1, stride=stride, bias=False),
+                nn.BatchNorm2d(planes * block.expansion),
+            )
+
+        layers = []
+        layers.append(block(self.inplanes, planes, stride, downsample))
+        self.inplanes = planes * block.expansion
+        for i in range(1, blocks):
+            layers.append(block(self.inplanes, planes))
+
+        return nn.Sequential(*layers)
+
+    def forward(self, x):
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = self.relu(x)
+        x = self.maxpool(x)
+
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        x = self.layer4(x)
+
+        x = self.avgpool(x)
+        x = x.view(x.size(0), -1)
+        x = self.fc(x)
+
+        return x
+
+
+class Selayer(nn.Module):
+
+    def __init__(self, inplanes):
+        super(Selayer, self).__init__()
+        self.global_avgpool = nn.AdaptiveAvgPool2d(1)
+        self.conv1 = nn.Conv2d(inplanes, inplanes / 16, kernel_size=1, stride=1)
+        self.conv2 = nn.Conv2d(inplanes / 16, inplanes, kernel_size=1, stride=1)
+        self.relu = nn.ReLU(inplace=True)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+
+        out = self.global_avgpool(x)
+
+        out = self.conv1(out)
+        out = self.relu(out)
+
+        out = self.conv2(out)
+        out = self.sigmoid(out)
+
+        return x * out
+
+
+class BottleneckX(nn.Module):
+    expansion = 4
+
+    def __init__(self, inplanes, planes, cardinality, stride=1, downsample=None):
+        super(BottleneckX, self).__init__()
+        self.conv1 = nn.Conv2d(inplanes, planes * 2, kernel_size=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(planes * 2)
+
+        self.conv2 = nn.Conv2d(planes * 2, planes * 2, kernel_size=3, stride=stride,
+                               padding=1, groups=cardinality, bias=False)
+        self.bn2 = nn.BatchNorm2d(planes * 2)
+
+        self.conv3 = nn.Conv2d(planes * 2, planes * 4, kernel_size=1, bias=False)
+        self.bn3 = nn.BatchNorm2d(planes * 4)
+
+        self.selayer = Selayer(planes * 4)
+
+        self.relu = nn.ReLU(inplace=True)
+        self.downsample = downsample
+        self.stride = stride
+
+    def forward(self, x):
+        residual = x
+
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu(out)
+
+        out = self.conv2(out)
+        out = self.bn2(out)
+        out = self.relu(out)
+
+        out = self.conv3(out)
+        out = self.bn3(out)
+
+        out = self.selayer(out)
+
+        if self.downsample is not None:
+            residual = self.downsample(x)
+
+        out += residual
+        out = self.relu(out)
+
+        return out
+
+
+class SEResNeXt(nn.Module):
+
+    def __init__(self, block, layers, cardinality=32, num_classes=1000):
+        super(SEResNeXt, self).__init__()
+        self.cardinality = cardinality
+        self.inplanes = 64
+
+        self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3,
+                               bias=False)
+        self.bn1 = nn.BatchNorm2d(64)
+        self.relu = nn.ReLU(inplace=True)
+        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+
+        self.layer1 = self._make_layer(block, 64, layers[0])
+        self.layer2 = self._make_layer(block, 128, layers[1], stride=2)
+        self.layer3 = self._make_layer(block, 256, layers[2], stride=2)
+        self.layer4 = self._make_layer(block, 512, layers[3], stride=2)
+
+        self.avgpool = nn.AdaptiveAvgPool2d(1)
+        self.fc = nn.Linear(512 * block.expansion, num_classes)
+
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
+                m.weight.data.normal_(0, math.sqrt(2. / n))
+                if m.bias is not None:
+                    m.bias.data.zero_()
+            elif isinstance(m, nn.BatchNorm2d):
+                m.weight.data.fill_(1)
+                m.bias.data.zero_()
+
+    def _make_layer(self, block, planes, blocks, stride=1):
+        downsample = None
+        if stride != 1 or self.inplanes != planes * block.expansion:
+            downsample = nn.Sequential(
+                nn.Conv2d(self.inplanes, planes * block.expansion,
+                          kernel_size=1, stride=stride, bias=False),
+                nn.BatchNorm2d(planes * block.expansion),
+            )
+
+        layers = []
+        layers.append(block(self.inplanes, planes, self.cardinality, stride, downsample))
+        self.inplanes = planes * block.expansion
+        for i in range(1, blocks):
+            layers.append(block(self.inplanes, planes, self.cardinality))
+
+        return nn.Sequential(*layers)
+
+    def forward(self, x):
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = self.relu(x)
+        x = self.maxpool(x)
+
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        x = self.layer4(x)
+
+        x = self.avgpool(x)
+        x = x.view(x.size(0), -1)
+
+        x = self.fc(x)
+
+        return x
+
+
+def se_resnet50(**kwargs):
+    """Constructs a SE-ResNet-50 model.
+
+    Args:
+        num_classes = 1000 (default)
+    """
+    model = SEResNet(Bottleneck, [3, 4, 6, 3], **kwargs)
+    return model
+
+
+def se_resnet101(**kwargs):
+    """Constructs a SE-ResNet-101 model.
+
+    Args:
+        num_classes = 1000 (default)
+    """
+    model = SEResNet(Bottleneck, [3, 4, 23, 3], **kwargs)
+    return model
+
+
+def se_resnet152(**kwargs):
+    """Constructs a SE-ResNet-152 model.
+
+    Args:
+        num_classes = 1000 (default)
+    """
+    model = SEResNet(Bottleneck, [3, 8, 36, 3], **kwargs)
+    return model
+
+
+def se_resnext50(**kwargs):
+    """Constructs a SE-ResNeXt-50 model.
+
+    Args:
+        num_classes = 1000 (default)
+    """
+    model = SEResNeXt(BottleneckX, [3, 4, 6, 3], **kwargs)
+    return model
+
+
+def se_resnext101(**kwargs):
+    """Constructs a SE-ResNeXt-101 model.
+
+    Args:
+        num_classes = 1000 (default)
+    """
+    model = SEResNeXt(BottleneckX, [3, 4, 23, 3], **kwargs)
+    return model
+
+
+def se_resnext152(**kwargs):
+    """Constructs a SE-ResNeXt-152 model.
+
+    Args:
+        num_classes = 1000 (default)
+    """
+    model = SEResNeXt(BottleneckX, [3, 8, 36, 3], **kwargs)
+    return model
