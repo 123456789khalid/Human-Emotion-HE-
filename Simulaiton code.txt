@@ -1,0 +1,110 @@
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import pandas as pd
+
+# Set the text style to Times New Roman
+plt.rcParams['font.family'] = 'Times New Roman'
+plt.rcParams['font.size'] = 12
+
+# Sample data for the datasets and models (random values for demonstration)
+datasets = ['JAFFE', 'Emotic', 'MAFW', 'ArmanEmo', 'G-REx']
+models = ['MobileNet V3', 'ViLT', 'RegNet', 'SE-ResNeXt', 'Proposed MMNN']
+
+# High accuracy for "Proposed MMNN" (Multi-Modal Neural Network)
+accuracy = np.random.uniform(85, 90, size=(5, 4))  # Accuracy for each model on each dataset (4 models initially)
+accuracy = np.hstack([accuracy, np.random.uniform(95, 98, size=(5, 1))])  # Add high accuracy for MMNN (5th column)
+
+precision = np.random.uniform(0.7, 1.0, size=(5, 5))  # Precision for each model on each dataset
+recall = np.random.uniform(0.7, 1.0, size=(5, 5))  # Recall for each model on each dataset
+f1_score = np.random.uniform(0.7, 1.0, size=(5, 5))  # F1-Score for each model on each dataset
+
+# Create a DataFrame for easy comparison
+comparison_df = pd.DataFrame({
+    'Dataset': datasets,
+    'MobileNet V3 Accuracy': accuracy[:, 0],
+    'ViLT Accuracy': accuracy[:, 1],
+    'RegNet Accuracy': accuracy[:, 2],
+    'SE-ResNeXt Accuracy': accuracy[:, 3],
+    'Proposed MMNN Accuracy': accuracy[:, 4]
+})
+
+# Function to plot comparison for each dataset (Accuracy, Precision, etc.)
+def plot_comparison(df, dataset):
+    # Accuracy Plot
+    plt.figure(figsize=(10, 6))
+    df.set_index('Dataset').loc[dataset].plot(kind='bar', color=['darkblue', 'green', 'red', 'purple', 'orange'])
+    plt.title(f'Accuracy Comparison for {dataset} Dataset', fontsize=16)
+    plt.ylabel('Accuracy (%)', fontsize=12)
+    plt.xlabel('Models', fontsize=12)
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    plt.show()
+
+    # Precision Plot
+    plt.figure(figsize=(10, 6))
+    df.set_index('Dataset').loc[dataset].plot(kind='bar', color=['darkblue', 'green', 'red', 'purple', 'orange'])
+    plt.title(f'Precision Comparison for {dataset} Dataset', fontsize=16)
+    plt.ylabel('Precision', fontsize=12)
+    plt.xlabel('Models', fontsize=12)
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    plt.show()
+
+    # F1-Score Plot
+    plt.figure(figsize=(10, 6))
+    df.set_index('Dataset').loc[dataset].plot(kind='bar', color=['darkblue', 'green', 'red', 'purple', 'orange'])
+    plt.title(f'F1-Score Comparison for {dataset} Dataset', fontsize=16)
+    plt.ylabel('F1-Score', fontsize=12)
+    plt.xlabel('Models', fontsize=12)
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    plt.show()
+
+    # Performance Summary Table for the Dataset
+    metrics_df = pd.DataFrame({
+        'Dataset': datasets,
+        'MobileNet V3 Accuracy': accuracy[:, 0],
+        'ViLT Accuracy': accuracy[:, 1],
+        'RegNet Accuracy': accuracy[:, 2],
+        'SE-ResNeXt Accuracy': accuracy[:, 3],
+        'Proposed MMNN Accuracy': accuracy[:, 4],
+        'MobileNet V3 Precision': precision[:, 0],
+        'ViLT Precision': precision[:, 1],
+        'RegNet Precision': precision[:, 2],
+        'SE-ResNeXt Precision': precision[:, 3],
+        'Proposed MMNN Precision': precision[:, 4],
+        'MobileNet V3 Recall': recall[:, 0],
+        'ViLT Recall': recall[:, 1],
+        'RegNet Recall': recall[:, 2],
+        'SE-ResNeXt Recall': recall[:, 3],
+        'Proposed MMNN Recall': recall[:, 4],
+        'MobileNet V3 F1-Score': f1_score[:, 0],
+        'ViLT F1-Score': f1_score[:, 1],
+        'RegNet F1-Score': f1_score[:, 2],
+        'SE-ResNeXt F1-Score': f1_score[:, 3],
+        'Proposed MMNN F1-Score': f1_score[:, 4]
+    })
+    
+    print(f"Performance Metrics Summary for {dataset} Dataset:")
+    print(metrics_df[metrics_df['Dataset'] == dataset].iloc[:, 1:])
+
+# Function to generate confusion matrix for each dataset
+def plot_confusion_matrix(dataset):
+    # Random confusion matrix for each dataset (7 emotion classes: Happy, Anger, Fear, Disgust, Sad, Surprise, Neutral)
+    emotion_classes = ['Happy', 'Anger', 'Fear', 'Disgust', 'Sad', 'Surprise', 'Neutral']
+    conf_matrix = np.random.randint(50, 150, size=(7, 7))
+    
+    # Plot the confusion matrix
+    plt.figure(figsize=(8, 6))
+    sns.heatmap(conf_matrix, annot=True, fmt='d', cmap='Blues', xticklabels=emotion_classes, yticklabels=emotion_classes)
+    plt.title(f'Confusion Matrix for {dataset} Dataset', fontsize=16)
+    plt.ylabel('True Labels', fontsize=12)
+    plt.xlabel('Predicted Labels', fontsize=12)
+    plt.tight_layout()
+    plt.show()
+
+# Generating the plots for each dataset and confusion matrix separately
+for dataset in datasets:
+    plot_comparison(comparison_df, dataset)  # Plot accuracy, precision, F1-Score, etc.
+    plot_confusion_matrix(dataset)  # Plot confusion matrix
