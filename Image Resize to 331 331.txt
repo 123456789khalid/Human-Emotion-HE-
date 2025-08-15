@@ -1,0 +1,15 @@
+rootFolder = fullfile('H:\Khalid Code updated\Khalid updated Dataset\3. Augment with 30%\data 30%');
+imgSets = imageSet(fullfile(rootFolder,'Surprice'));
+ok = imgSets.Count
+%%
+
+for i = 1:ok
+    I = read(imgSets(1),i);
+img1=imresize(I,[331 331]);
+       
+    
+    str2 = strcat('D:\Khalid Code updated\khalid 2 agument\Surprice\img-1',int2str(i),'.jpg');
+    imwrite(img2,str2,'jpg');
+    i
+    
+end
